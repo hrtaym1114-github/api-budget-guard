@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "description": "Example prices as of 2026-10, verify with provider before use.",
+  "timezone": "Asia/Tokyo",
+  "pricing": {
+    "event": {
+      "post_read": 0.005,
+      "owned_read": 0.001,
+      "user_read": 0.01,
+      "news_read": 0.005
+    },
+    "request": {
+      "counts_recent": 0.005,
+      "counts_all": 0.01,
+      "trends": 0.01,
+      "post_create": 0.015,
+      "content_create_with_url": 0.2
+    }
+  },
+  "tools": {
+    "search_posts_all": { "per_object": "post_read" },
+    "get_posts_by_ids": { "per_object": "post_read" },
+    "get_users_posts": { "per_object": "post_read", "owned_per_object": "owned_read" },
+    "get_users_timeline": { "per_object": "post_read" },
+    "get_posts_quoted_posts": { "per_object": "post_read" },
+    "get_users_mentions": { "per_object": "owned_read" },
+    "get_users_bookmarks": { "per_object": "owned_read" },
+    "get_users_by_usernames": { "per_object": "user_read" },
+    "get_users_by_username": { "per_object": "user_read" },
+    "search_users": { "per_object": "user_read" },
+    "get_posts_reposted_by": { "per_object": "user_read" },
+    "search_news": { "per_object": "news_read" },
+    "get_news": { "per_object": "news_read" },
+    "get_posts_counts_recent": { "per_request": "counts_recent" },
+    "get_posts_counts_all": { "per_request": "counts_all" },
+    "get_trends_by_woeid": { "per_request": "trends" },
+    "create_post": { "per_request": "post_create" },
+    "create_post_with_url": { "per_request": "content_create_with_url" },
+    "get_usage_credits": { "free": true },
+    "get_users_me": { "free": true },
+    "get_posts_liking_users": { "free": true }
+  },
+  "thresholds": {
+    "warn": 0.5,
+    "degrade": 0.8,
+    "stop": 1.0
+  },
+  "safety_margin_usd": 0.5,
+  "balance_max_age_hours": 36,
+  "paid_baseline_usd": 0,
+  "paid_policy": "stop",
+  "phases": [
+    {
+      "name": "trial-window",
+      "start": "2026-10-01T00:00:00+09:00",
+      "end": "2026-10-20T06:56:00+09:00",
+      "period": "phase",
+      "cap_usd": 3.0,
+      "oneoff_approved_usd": 0,
+      "routines": {
+        "rival-watch": { "per_run_usd": 0.25, "period_usd": 0.8 },
+        "quote-scan": { "per_run_usd": 0.15, "period_usd": 0.8 },
+        "engagement-check": { "per_run_usd": 0.05, "period_usd": 0.15 },
+        "daily-metrics": { "per_run_usd": 0.02, "period_usd": 0.15 },
+        "adhoc": { "per_run_usd": 0.25, "period_usd": 0.3 }
+      }
+    },
+    {
+      "name": "steady",
+      "start": "2026-10-20T06:56:00+09:00",
+      "end": "2027-10-08T17:56:00+09:00",
+      "period": "month",
+      "cap_usd": 1.6,
+      "oneoff_approved_usd": 0,
+      "routines": {
+        "rival-watch": { "per_run_usd": 0.06, "period_usd": 0.8 },
+        "quote-scan": { "per_run_usd": 0.05, "period_usd": 0.45 },
+        "engagement-check": { "per_run_usd": 0.03, "period_usd": 0.15 },
+        "daily-metrics": { "per_run_usd": 0.0, "period_usd": 0.0 },
+        "adhoc": { "per_run_usd": 0.1, "period_usd": 0.2 }
+      }
+    }
+  ]
+}

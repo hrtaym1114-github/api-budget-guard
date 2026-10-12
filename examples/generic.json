@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "description": "Generic offline API budget example.",
+  "timezone": "UTC",
+  "pricing": {
+    "event": {
+      "item": 0.002,
+      "owned_item": 0.0005
+    },
+    "request": {
+      "lookup": 0.01,
+      "write": 0.02
+    }
+  },
+  "tools": {
+    "search": { "per_object": "item" },
+    "owned_search": { "per_object": "owned_item" },
+    "lookup": { "per_request": "lookup" },
+    "write": { "per_request": "write" },
+    "account_status": { "free": true }
+  },
+  "thresholds": {
+    "warn": 0.5,
+    "degrade": 0.8,
+    "stop": 1.0
+  },
+  "safety_margin_usd": 0.1,
+  "balance_max_age_hours": 48,
+  "paid_baseline_usd": 0,
+  "paid_policy": "stop",
+  "phases": [
+    {
+      "name": "monthly",
+      "start": "2026-01-01T00:00:00+00:00",
+      "end": "2028-01-01T00:00:00+00:00",
+      "period": "month",
+      "cap_usd": 5.0,
+      "oneoff_approved_usd": 0,
+      "routines": {
+        "daily-agent": { "per_run_usd": 0.25, "period_usd": 3.0 },
+        "weekly-report": { "per_run_usd": 0.5, "period_usd": 1.5 },
+        "adhoc": { "per_run_usd": 0.5, "period_usd": 0.5 }
+      }
+    }
+  ]
+}
