@@ -19,19 +19,21 @@ python3 -m venv .venv
 
 ## 30s Demo
 
-![Demo GIF placeholder](docs/demo-placeholder.gif)
+[![go vs deny](docs/media/api-budget-guard-strip.png)](docs/media/api-budget-guard-howto.gif)
+
+- 🎞️ [GIF (GO ↔ DENY)](docs/media/api-budget-guard-howto.gif) · Release: [v0.1.0](https://github.com/hrtaym1114-github/api-budget-guard/releases/tag/v0.1.0)
 
 ```bash
 api-budget-guard init --preset x-api
-api-budget-guard check --routine rival-watch --call search_posts_all:10
+api-budget-guard check --routine keyword-watch --call search_posts_all:10
 for i in $(seq 20); do
-  api-budget-guard record --routine rival-watch --tool search_posts_all --objects 10
+  api-budget-guard record --routine keyword-watch --tool search_posts_all --objects 10
 done
-api-budget-guard check --routine rival-watch --call search_posts_all:10
+api-budget-guard check --routine keyword-watch --call search_posts_all:10
 api-budget-guard status
 ```
 
-The first check is a go decision: `search_posts_all:10` costs `$0.05` against the example `rival-watch` cap of `$0.80`. After the loop, the same check exits `20` because the routine cap is reached.
+The first check is a go decision: `search_posts_all:10` costs `$0.05` against the example `keyword-watch` cap of `$0.80`. After the loop, the same check exits `20` because the routine cap is reached.
 
 ## Commands
 
@@ -83,7 +85,7 @@ The bundled `x-api` preset contains example prices as of 2026-10. Verify prices 
 ## Wrapper Mode
 
 ```bash
-api-budget-guard run --routine rival-watch --call search_posts_all:10 -- ./job.sh
+api-budget-guard run --routine keyword-watch --call search_posts_all:10 -- ./job.sh
 ```
 
 The wrapper checks first. It runs the command only for exit `0` or `10`, exports `BUDGET_LEVEL=ok` or `BUDGET_LEVEL=degrade`, and records the estimate after a successful command.

@@ -50,45 +50,45 @@ class CliTest(unittest.TestCase):
         self.assertEqual(self.call("estimate", "--call", "missing:1"), cli.EXIT_DENY)
 
     def test_check_allows_small_run(self) -> None:
-        self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "search_posts_all:10"), cli.EXIT_OK)
+        self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:10"), cli.EXIT_OK)
 
     def test_demo_loop_flips_go_to_deny(self) -> None:
-        self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "search_posts_all:10"), cli.EXIT_OK)
+        self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:10"), cli.EXIT_OK)
         for _ in range(20):
             self.assertEqual(
-                self.call("record", "--routine", "rival-watch", "--tool", "search_posts_all", "--objects", "10"),
+                self.call("record", "--routine", "keyword-watch", "--tool", "search_posts_all", "--objects", "10"),
                 cli.EXIT_OK,
             )
-        self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "search_posts_all:10"), cli.EXIT_DENY)
+        self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:10"), cli.EXIT_DENY)
 
     def test_degrade_at_threshold(self) -> None:
         cfg = cli.load_config(self.config)
         at = cli.now_for(cfg)
-        cli.append_ledger(self.ledger, {"ts": at.isoformat(), "kind": "spend", "routine": "quote-scan", "cost_usd": 2.36})
-        result = cli.check_budget(cfg, cli.load_ledger(self.ledger), "rival-watch", 0.05, at)
+        cli.append_ledger(self.ledger, {"ts": at.isoformat(), "kind": "spend", "routine": "mention-scan", "cost_usd": 2.36})
+        result = cli.check_budget(cfg, cli.load_ledger(self.ledger), "keyword-watch", 0.05, at)
         self.assertTrue(result["allowed"])
         self.assertEqual(result["level"], "degrade")
         self.assertEqual(cli.exit_code_for(result), cli.EXIT_DEGRADE)
 
     def test_monthly_period_resets(self) -> None:
-        cli.append_ledger(self.ledger, {"ts": "2026-11-20T12:00:00+09:00", "kind": "spend", "routine": "rival-watch", "cost_usd": 0.8})
+        cli.append_ledger(self.ledger, {"ts": "2026-11-20T12:00:00+09:00", "kind": "spend", "routine": "keyword-watch", "cost_usd": 0.8})
         with mock.patch.dict(os.environ, {"API_BUDGET_GUARD_NOW": "2026-12-01T12:00:00+09:00"}):
-            self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "search_posts_all:10"), 0)
+            self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:10"), 0)
 
     def test_no_phase_denies(self) -> None:
         with mock.patch.dict(os.environ, {"API_BUDGET_GUARD_NOW": "2028-01-01T00:00:00+09:00"}):
-            self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "search_posts_all:1"), cli.EXIT_DENY)
+            self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:1"), cli.EXIT_DENY)
 
     def test_paid_baseline_drop_denies_all(self) -> None:
         cfg = cli.load_config(self.config)
         cfg["paid_baseline_usd"] = 10.0
         self.config.write_text(json.dumps(cfg), encoding="utf-8")
         self.assertEqual(self.call("balance", "--usd", "14", "--free", "5", "--paid", "9"), cli.EXIT_DENY)
-        self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "get_usage_credits:1"), cli.EXIT_DENY)
+        self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "get_usage_credits:1"), cli.EXIT_DENY)
 
     def test_stale_balance_degrades(self) -> None:
         cli.append_ledger(self.ledger, {"ts": "2026-10-10T00:00:00+09:00", "kind": "balance", "free_balance": 10, "paid_balance": 0, "total_balance": 10})
-        self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "search_posts_all:10"), cli.EXIT_DEGRADE)
+        self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:10"), cli.EXIT_DEGRADE)
 
     def test_fail_closed_missing_and_corrupt_files(self) -> None:
         self.assertEqual(
@@ -105,12 +105,12 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(self.call("status", "--json"), 0)
         data = json.loads(out.getvalue())
-        self.assertEqual(data["phase"], "trial-window")
+        self.assertEqual(data["phase"], "launch-window")
 
     def test_check_json_shape(self) -> None:
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            self.assertEqual(self.call("check", "--routine", "rival-watch", "--call", "search_posts_all:10", "--json"), 0)
+            self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:10", "--json"), 0)
         data = json.loads(out.getvalue())
         self.assertEqual(set(data), {"level", "cap", "spent", "remaining", "reason"})
         self.assertEqual(data["level"], "ok")
@@ -121,7 +121,7 @@ class CliTest(unittest.TestCase):
         code = self.call(
             "run",
             "--routine",
-            "rival-watch",
+            "keyword-watch",
             "--call",
             "search_posts_all:10",
             "--",
@@ -139,7 +139,7 @@ class CliTest(unittest.TestCase):
             self.call(
                 "run",
                 "--routine",
-                "rival-watch",
+                "keyword-watch",
                 "--call",
                 "search_posts_all:1000",
                 "--",

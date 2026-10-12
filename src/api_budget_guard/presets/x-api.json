@@ -51,32 +51,32 @@
   "paid_policy": "stop",
   "phases": [
     {
-      "name": "trial-window",
+      "name": "launch-window",
       "start": "2026-10-01T00:00:00+09:00",
-      "end": "2026-10-20T06:56:00+09:00",
+      "end": "2026-11-01T00:00:00+09:00",
       "period": "phase",
       "cap_usd": 3.0,
       "oneoff_approved_usd": 0,
       "routines": {
-        "rival-watch": { "per_run_usd": 0.25, "period_usd": 0.8 },
-        "quote-scan": { "per_run_usd": 0.15, "period_usd": 0.8 },
-        "engagement-check": { "per_run_usd": 0.05, "period_usd": 0.15 },
-        "daily-metrics": { "per_run_usd": 0.02, "period_usd": 0.15 },
+        "keyword-watch": { "per_run_usd": 0.25, "period_usd": 0.8 },
+        "mention-scan": { "per_run_usd": 0.15, "period_usd": 0.8 },
+        "reply-check": { "per_run_usd": 0.05, "period_usd": 0.15 },
+        "daily-report": { "per_run_usd": 0.02, "period_usd": 0.15 },
         "adhoc": { "per_run_usd": 0.25, "period_usd": 0.3 }
       }
     },
     {
       "name": "steady",
-      "start": "2026-10-20T06:56:00+09:00",
-      "end": "2027-10-08T17:56:00+09:00",
+      "start": "2026-11-01T00:00:00+09:00",
+      "end": "2028-01-01T00:00:00+09:00",
       "period": "month",
       "cap_usd": 1.6,
       "oneoff_approved_usd": 0,
       "routines": {
-        "rival-watch": { "per_run_usd": 0.06, "period_usd": 0.8 },
-        "quote-scan": { "per_run_usd": 0.05, "period_usd": 0.45 },
-        "engagement-check": { "per_run_usd": 0.03, "period_usd": 0.15 },
-        "daily-metrics": { "per_run_usd": 0.0, "period_usd": 0.0 },
+        "keyword-watch": { "per_run_usd": 0.06, "period_usd": 0.8 },
+        "mention-scan": { "per_run_usd": 0.05, "period_usd": 0.45 },
+        "reply-check": { "per_run_usd": 0.03, "period_usd": 0.15 },
+        "daily-report": { "per_run_usd": 0.0, "period_usd": 0.0 },
         "adhoc": { "per_run_usd": 0.1, "period_usd": 0.2 }
       }
     }
