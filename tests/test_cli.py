@@ -154,3 +154,49 @@ class CliTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DenyWordingTest(unittest.TestCase):
+    """Deny reasons must name the real cap window (phase vs monthly)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name)
+        self.config = root / "budget.json"
+        self.ledger = root / "ledger.jsonl"
+        with mock.patch.dict(os.environ, {"API_BUDGET_GUARD_NOW": "2026-10-12T12:00:00+09:00"}):
+            cli.main(["--config", str(self.config), "--ledger", str(self.ledger), "init", "--preset", "x-api"])
+        self.cfg = cli.load_config(self.config)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def reason_at(self, when: str, routine: str, cost: float) -> str:
+        tz = cli.tz_for(self.cfg)
+        at = cli.parse_ts(when, tz)
+        cli.append_ledger(self.ledger, {"ts": at.isoformat(), "kind": "spend", "routine": routine, "cost_usd": cost})
+        result = cli.check_budget(self.cfg, cli.load_ledger(self.ledger), "keyword-watch", 0.05, at)
+        self.assertFalse(result["allowed"])
+        return result["reason"]
+
+    def test_phase_period_routine_cap_says_phase(self) -> None:
+        reason = self.reason_at("2026-10-12T12:00:00+09:00", "keyword-watch", 1.0)
+        self.assertIn("routine phase cap reached", reason)
+        self.assertNotIn("monthly", reason)
+
+    def test_month_period_routine_cap_says_monthly(self) -> None:
+        reason = self.reason_at("2026-11-12T12:00:00+09:00", "keyword-watch", 5.0)
+        self.assertIn("routine monthly cap reached", reason)
+
+    def test_phase_period_total_cap_says_phase(self) -> None:
+        reason = self.reason_at("2026-10-12T12:00:00+09:00", "mention-scan", 50.0)
+        self.assertIn("phase total cap reached", reason)
+        self.assertNotIn("monthly", reason)
+
+    def test_month_period_total_cap_says_monthly(self) -> None:
+        reason = self.reason_at("2026-11-12T12:00:00+09:00", "mention-scan", 500.0)
+        self.assertIn("monthly total cap reached", reason)
+
+    def test_period_label(self) -> None:
+        self.assertEqual(cli.period_label({"period": "month"}), "monthly")
+        self.assertEqual(cli.period_label({"period": "phase"}), "phase")

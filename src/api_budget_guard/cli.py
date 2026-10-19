@@ -151,6 +151,11 @@ def period_bounds(cfg: dict, phase: dict, at: datetime) -> tuple[datetime, datet
     return phase_start, phase_end
 
 
+def period_label(phase: dict) -> str:
+    """Human label for the cap window: 'monthly' for period=month, else 'phase'."""
+    return "monthly" if phase.get("period") == "month" else "phase"
+
+
 def phase_cap(phase: dict) -> float:
     return float(phase.get("cap_usd", 0)) + float(phase.get("oneoff_approved_usd", 0))
 
@@ -273,11 +278,13 @@ def check_budget(cfg: dict, ledger: list[dict], routine: str, estimate_usd: floa
             result["reasons"].append(f"estimate exceeds per-run cap ${per_run:.3f}")
         if spent_routine + estimate_usd > period + 1e-9:
             result["allowed"] = False
-            result["reasons"].append(f"routine monthly cap reached: ${spent_routine:.3f} spent of ${period:.3f}")
+            result["reasons"].append(
+                f"routine {period_label(phase)} cap reached: ${spent_routine:.3f} spent of ${period:.3f}"
+            )
 
     if level == "stop":
         result["allowed"] = False
-        result["reasons"].append(f"period cap reached: ${spent_total:.3f} spent of ${cap:.3f}")
+        result["reasons"].append(f"{period_label(phase)} total cap reached: ${spent_total:.3f} spent of ${cap:.3f}")
 
     left = free_left(cfg, ledger)
     result["free_left_usd"] = left
