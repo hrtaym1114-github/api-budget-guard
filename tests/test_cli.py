@@ -152,10 +152,6 @@ class CliTest(unittest.TestCase):
         self.assertFalse(marker.exists())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DenyWordingTest(unittest.TestCase):
     """Deny reasons must name the real cap window (phase vs monthly)."""
 
@@ -200,3 +196,7 @@ class DenyWordingTest(unittest.TestCase):
     def test_period_label(self) -> None:
         self.assertEqual(cli.period_label({"period": "month"}), "monthly")
         self.assertEqual(cli.period_label({"period": "phase"}), "phase")
+
+
+if __name__ == "__main__":
+    unittest.main()
