@@ -253,6 +253,42 @@ class InputTest(EdgeCaseBase):
         self.assertEqual((row["objects"], row["cost_usd"]), (5, 0.0))
 
 
+class AmountValidationTest(EdgeCaseBase):
+    def assert_denied(self, message: str, *args: str) -> None:
+        code, _out, err = self.run_cli(*args)
+        self.assertEqual(code, cli.EXIT_DENY, args)
+        self.assertIn(message, err)
+        self.assertNotIn("Traceback", err)
+
+    def test_check_rejects_non_finite_and_negative_usd(self) -> None:
+        for value in ("nan", "inf", "-5"):
+            self.assert_denied("--usd must be a non-negative number", "check", "--routine", "keyword-watch", "--usd", value)
+
+    def test_check_requires_call_or_usd(self) -> None:
+        self.assert_denied("check requires --call or --usd", "check", "--routine", "keyword-watch")
+
+    def test_check_accepts_zero_usd(self) -> None:
+        self.assertEqual(self.run_cli("check", "--routine", "keyword-watch", "--usd", "0")[0], cli.EXIT_OK)
+
+    def test_negative_call_count_rejected(self) -> None:
+        with self.assertRaisesRegex(cli.GuardError, "call count must be non-negative"):
+            cli.parse_call("search_posts_all:-5")
+        self.assert_denied("call count must be non-negative", "estimate", "--call", "search_posts_all:-5")
+        self.assertEqual(cli.parse_call("search_posts_all:0"), ("search_posts_all", 0, False))
+
+    def test_record_rejects_bad_amounts_without_writing(self) -> None:
+        self.assert_denied("--usd must be a non-negative number", "record", "--routine", "adhoc", "--tool", "x", "--usd", "nan")
+        self.assert_denied("--usd must be a non-negative number", "record", "--routine", "adhoc", "--tool", "x", "--usd", "-1")
+        self.assert_denied("--objects must be non-negative", "record", "--routine", "adhoc", "--tool", "search_posts_all", "--objects", "-3")
+        self.assertEqual(cli.load_ledger(self.ledger), [])
+
+    def test_balance_rejects_bad_amounts_without_writing(self) -> None:
+        self.assert_denied("--usd must be a non-negative number", "balance", "--usd", "nan")
+        self.assert_denied("--free must be a non-negative number", "balance", "--usd", "5", "--free", "-1")
+        self.assert_denied("--paid must be a non-negative number", "balance", "--usd", "5", "--paid", "inf")
+        self.assertEqual(cli.load_ledger(self.ledger), [])
+
+
 class LedgerAndConfigTest(EdgeCaseBase):
     def test_blank_ledger_lines_are_skipped(self) -> None:
         self.ledger.write_text(f'\n  \n{{"ts": "{NOW}", "kind": "spend", "cost_usd": 0.1}}\n\n', encoding="utf-8")

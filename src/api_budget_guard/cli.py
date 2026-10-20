@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -23,6 +24,12 @@ class GuardError(Exception):
 def fail(message: str) -> int:
     print(f"Denied: {message}", file=sys.stderr)
     return EXIT_DENY
+
+
+def usd_amount(value: float, label: str) -> float:
+    if not math.isfinite(value) or value < 0:
+        raise GuardError(f"{label} must be a non-negative number: {value}")
+    return value
 
 
 def tz_for(cfg: dict) -> ZoneInfo:
@@ -121,6 +128,8 @@ def parse_call(spec: str) -> tuple[str, int, bool]:
         n = int(parts[1])
     except ValueError as exc:
         raise GuardError(f"call count must be an integer: {spec}") from exc
+    if n < 0:
+        raise GuardError(f"call count must be non-negative: {spec}")
     owned = len(parts) == 3 and parts[2].lower() == "owned"
     if len(parts) == 3 and not owned:
         raise GuardError(f"unknown call modifier: {parts[2]}")
@@ -507,7 +516,9 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
 
         if args.cmd == "check":
-            estimate = args.usd if args.usd is not None else estimate_calls(cfg, args.call)
+            if args.usd is None and not args.call:
+                raise GuardError("check requires --call or --usd")
+            estimate = usd_amount(args.usd, "--usd") if args.usd is not None else estimate_calls(cfg, args.call)
             result = check_budget(cfg, ledger, args.routine, estimate, at)
             if args.json:
                 print(json.dumps({
@@ -528,10 +539,12 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "record":
             if args.usd is not None:
-                cost = round(args.usd, 6)
+                cost = round(usd_amount(args.usd, "--usd"), 6)
                 objects = 0
             else:
                 objects = args.objects or 0
+                if objects < 0:
+                    raise GuardError(f"--objects must be non-negative: {objects}")
                 cost = estimate_call(cfg, args.tool, objects, args.owned)
             row = {
                 "ts": at.isoformat(timespec="seconds"),
@@ -549,8 +562,9 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
 
         if args.cmd == "balance":
-            free = args.free if args.free is not None else args.usd
-            paid = args.paid if args.paid is not None else max(args.usd - free, 0)
+            usd = usd_amount(args.usd, "--usd")
+            free = usd_amount(args.free, "--free") if args.free is not None else usd
+            paid = usd_amount(args.paid, "--paid") if args.paid is not None else max(usd - free, 0)
             row = balance_row(cfg, ledger, free, paid, at)
             append_ledger(ledger_path, row)
             print(f"Balance recorded: free ${free:.2f}, paid ${paid:.2f}, total ${free + paid:.2f}")
