@@ -32,16 +32,28 @@ def usd_amount(value: float, label: str) -> float:
     return value
 
 
+def is_finite_number(value: object) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def tz_for(cfg: dict) -> ZoneInfo:
     name = cfg.get("timezone", "UTC")
     try:
         return ZoneInfo(name)
-    except ZoneInfoNotFoundError as exc:
+    except (ZoneInfoNotFoundError, TypeError, ValueError) as exc:
         raise GuardError(f"unknown timezone in config: {name}") from exc
 
 
 def parse_ts(value: str, tz: ZoneInfo | None = None) -> datetime:
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if not isinstance(value, str):
+        raise GuardError(f"invalid timestamp: {value!r}")
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise GuardError(f"invalid timestamp: {value}") from exc
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=tz or ZoneInfo("UTC"))
     return dt
@@ -50,7 +62,12 @@ def parse_ts(value: str, tz: ZoneInfo | None = None) -> datetime:
 def now_for(cfg: dict | None = None) -> datetime:
     tz = tz_for(cfg or {"timezone": "UTC"})
     override = os.environ.get("API_BUDGET_GUARD_NOW")
-    return parse_ts(override, tz).astimezone(tz) if override else datetime.now(tz)
+    if not override:
+        return datetime.now(tz)
+    try:
+        return parse_ts(override, tz).astimezone(tz)
+    except GuardError as exc:
+        raise GuardError(f"invalid API_BUDGET_GUARD_NOW: {override}") from exc
 
 
 def load_config(path: Path) -> dict:
@@ -60,9 +77,41 @@ def load_config(path: Path) -> dict:
         cfg = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise GuardError(f"config file is unreadable or corrupt: {path}") from exc
+    if not isinstance(cfg, dict):
+        raise GuardError(f"config file must contain a JSON object: {path}")
     for key in ("pricing", "tools", "thresholds", "phases"):
         if key not in cfg:
             raise GuardError(f"config file is missing required key: {key}")
+    for key in ("pricing", "tools", "thresholds"):
+        if not isinstance(cfg[key], dict):
+            raise GuardError(f"config {key} must be an object")
+    for key in ("warn", "degrade", "stop"):
+        if not is_finite_number(cfg["thresholds"].get(key)):
+            raise GuardError(f"config threshold is missing or not a number: {key}")
+    if not isinstance(cfg["phases"], list):
+        raise GuardError("config phases must be a list")
+    for index, phase in enumerate(cfg["phases"], 1):
+        if not isinstance(phase, dict):
+            raise GuardError(f"config phase {index} must be an object")
+        for key in ("name", "start", "end"):
+            if key not in phase:
+                raise GuardError(f"config phase {index} is missing required key: {key}")
+        for key in ("start", "end"):
+            try:
+                parse_ts(phase[key])
+            except GuardError as exc:
+                raise GuardError(f"config phase {phase['name']} has invalid {key}: {phase[key]}") from exc
+        for key in ("cap_usd", "oneoff_approved_usd"):
+            if key in phase and not is_finite_number(phase[key]):
+                raise GuardError(f"config phase {phase['name']} has non-numeric {key}")
+        if not isinstance(phase.get("routines", {}), dict):
+            raise GuardError(f"config phase {phase['name']} routines must be an object")
+        for name, routine in phase.get("routines", {}).items():
+            if not isinstance(routine, dict):
+                raise GuardError(f"config routine {name} must be an object")
+            for key in ("per_run_usd", "period_usd"):
+                if key in routine and not is_finite_number(routine[key]):
+                    raise GuardError(f"config routine {name} has non-numeric {key}")
     return cfg
 
 
@@ -83,6 +132,13 @@ def load_ledger(path: Path) -> list[dict]:
             raise GuardError(f"ledger file is corrupt at line {number}: {path}") from exc
         if not isinstance(row, dict) or "kind" not in row or "ts" not in row:
             raise GuardError(f"ledger row is invalid at line {number}: {path}")
+        try:
+            parse_ts(row["ts"])
+        except GuardError as exc:
+            raise GuardError(f"ledger row has invalid ts at line {number}: {path}") from exc
+        for key in ("cost_usd", "free_balance", "paid_balance", "total_balance"):
+            if key in row and not is_finite_number(row[key]):
+                raise GuardError(f"ledger row has invalid {key} at line {number}: {path}")
         rows.append(row)
     return rows
 
@@ -387,8 +443,8 @@ def format_status(st: dict) -> str:
         )
         for name, item in st["routines"].items():
             lines.append(
-                f"- {name}: ${item['spent_usd']:.3f} / ${float(item['period_usd']):.3f} "
-                f"(per run ${float(item['per_run_usd']):.3f})"
+                f"- {name}: ${item['spent_usd']:.3f} / ${float(item['period_usd'] or 0):.3f} "
+                f"(per run ${float(item['per_run_usd'] or 0):.3f})"
             )
     bal = st.get("latest_balance")
     if bal:
@@ -591,6 +647,8 @@ def main(argv: list[str] | None = None) -> int:
         return fail(str(exc))
     except OSError as exc:
         return fail(str(exc))
+    except (KeyError, TypeError, ValueError) as exc:
+        return fail(f"invalid value in config or ledger: {exc!r}")
 
     return EXIT_OK
 

@@ -327,6 +327,67 @@ class LedgerAndConfigTest(EdgeCaseBase):
         self.assertEqual(code, cli.EXIT_DENY)
         self.assertIn("unknown timezone in config: Mars/Base", err)
 
+    def assert_status_denied(self, message: str) -> None:
+        code, _out, err = self.run_cli("status")
+        self.assertEqual(code, cli.EXIT_DENY)
+        self.assertIn(message, err)
+        self.assertNotIn("Traceback", err)
+
+    def test_malformed_ledger_values_deny(self) -> None:
+        cases = {
+            '{"ts": "yesterday", "kind": "spend"}': "ledger row has invalid ts at line 1",
+            '{"ts": 123, "kind": "spend"}': "ledger row has invalid ts at line 1",
+            f'{{"ts": "{NOW}", "kind": "spend", "cost_usd": "abc"}}': "ledger row has invalid cost_usd at line 1",
+            f'{{"ts": "{NOW}", "kind": "spend", "cost_usd": NaN}}': "ledger row has invalid cost_usd at line 1",
+            f'{{"ts": "{NOW}", "kind": "balance", "free_balance": null}}': "ledger row has invalid free_balance at line 1",
+        }
+        for line, message in cases.items():
+            self.ledger.write_text(line + "\n", encoding="utf-8")
+            self.assert_status_denied(message)
+
+    def test_malformed_config_values_deny(self) -> None:
+        def mutate(change):
+            cfg = json.loads(json.dumps(self.cfg))
+            change(cfg)
+            self.write_config(cfg)
+
+        cases = [
+            (lambda c: c.update(timezone=""), "unknown timezone in config"),
+            (lambda c: c.update(timezone=9), "unknown timezone in config: 9"),
+            (lambda c: c.update(phases={}), "config phases must be a list"),
+            (lambda c: c.update(tools=[]), "config tools must be an object"),
+            (lambda c: c["thresholds"].pop("stop"), "config threshold is missing or not a number: stop"),
+            (lambda c: c["thresholds"].update(warn="x"), "config threshold is missing or not a number: warn"),
+            (lambda c: c["phases"][0].pop("end"), "config phase 1 is missing required key: end"),
+            (lambda c: c["phases"][1].update(start="soon"), "config phase steady has invalid start: soon"),
+            (lambda c: c["phases"][0].update(cap_usd="lots"), "config phase launch-window has non-numeric cap_usd"),
+            (lambda c: c["phases"][0]["routines"].update(adhoc=1), "config routine adhoc must be an object"),
+            (lambda c: c["phases"][0]["routines"]["adhoc"].update(period_usd=None), "config routine adhoc has non-numeric period_usd"),
+        ]
+        for change, message in cases:
+            mutate(change)
+            self.assert_status_denied(message)
+        self.config.write_text("[1]", encoding="utf-8")
+        self.assert_status_denied("config file must contain a JSON object")
+
+    def test_numeric_strings_in_config_still_accepted(self) -> None:
+        self.cfg["phases"][0]["cap_usd"] = "3.0"
+        self.cfg["thresholds"]["stop"] = "1"
+        self.write_config(self.cfg)
+        self.assertEqual(self.run_cli("check", "--routine", "keyword-watch", "--usd", "0.01")[0], cli.EXIT_OK)
+
+    def test_invalid_now_override_denies(self) -> None:
+        with mock.patch.dict(os.environ, {"API_BUDGET_GUARD_NOW": "garbage"}):
+            self.assert_status_denied("invalid API_BUDGET_GUARD_NOW: garbage")
+
+    def test_status_text_with_routine_missing_caps(self) -> None:
+        del self.cfg["phases"][0]["routines"]["adhoc"]["period_usd"]
+        self.write_config(self.cfg)
+        code, out, _err = self.run_cli("status")
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertIn("- adhoc: $0.000 / $0.000 (per run $0.250)", out)
+        self.assertFalse(self.check("adhoc", 0.01)["allowed"])
+
     def test_init_refuses_to_overwrite(self) -> None:
         code, _out, err = self.run_cli("init")
         self.assertEqual(code, cli.EXIT_DENY)
