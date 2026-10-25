@@ -49,7 +49,7 @@ api-budget-guard status [--json]
 api-budget-guard run --routine NAME --call TOOL:N[:owned] -- command arg...
 ```
 
-`--call` can be repeated; the estimate is the sum of all calls. `check` requires `--call` or `--usd` (`--usd` wins if both are given); a bare `check --routine NAME` denies with exit `20`. `init` defaults to the `generic` preset and refuses to overwrite existing files. Amounts and counts must be non-negative numbers.
+`--call` can be repeated; the estimate is the sum of all calls. `check` requires `--call` or `--usd` (`--usd` wins if both are given); a bare `check --routine NAME` denies with exit `20`. `init` defaults to the `generic` preset and refuses to overwrite existing files. Amounts, counts, and config prices must be non-negative finite numbers.
 
 Global options:
 
@@ -95,11 +95,11 @@ The bundled `x-api` preset contains example prices as of 2026-10. Verify prices 
 api-budget-guard run --routine keyword-watch --call search_posts_all:10 -- ./job.sh
 ```
 
-The wrapper checks first. It runs the command only for exit `0` or `10`, exports `BUDGET_LEVEL=ok` or `BUDGET_LEVEL=degrade`, and records the estimate to the ledger after the command exits. If the command fails, its estimate is still recorded for fail-closed accounting and the command's exit code is returned.
+The wrapper takes an exclusive lock, re-reads the ledger, and fsyncs the estimated spend before it starts the command. It runs the command only for exit `0` or `10`, exports `BUDGET_LEVEL=ok` or `BUDGET_LEVEL=degrade`, and leaves that reservation in place if the command fails (the command's exit code is returned). If the reserve cannot be written, the command is not started and the wrapper exits `20`. Concurrent `run` processes serialize on the lock, so two of them cannot both pass a cap that only one reservation fits. A SIGTERM after the reserve does not drop the spend.
 
 ## Fail-Closed Behavior
 
-Missing or corrupt config and ledger files, malformed values in them, and invalid amounts exit `20`. Unknown tools, invalid call specs, inactive phases, per-run and routine cap overruns, period cap overruns, free-balance safety margin overruns, and paid-balance alarms also exit `20`.
+Missing or corrupt config and ledger files, malformed values in them (including NaN, infinite, or negative prices), and invalid amounts exit `20`. Unknown tools, invalid call specs, inactive phases, per-run and routine cap overruns, period cap overruns, free-balance safety margin overruns, and paid-balance alarms also exit `20`. Ledger appends are fsynced before the process reports success. `check` is read-only and does not reserve; `run` is the path that reserves atomically.
 
 A paid-balance alarm stays active until a later ledger row with `"kind": "ack-paid"` (and a `ts`) is appended.
 
@@ -112,4 +112,4 @@ A paid-balance alarm stays active until a later ledger row with `"kind": "ack-pa
 
 ## 日本語メモ
 
-`api-budget-guard` は、夜間や定期実行のエージェントが従量課金 API を使いすぎないためのローカル CLI です。設定ファイルの単価と上限だけで判定し、ネットワークには接続しません。`check` で実行前に止め、`record` で実績を JSONL に残し、`run` で既存ジョブを包めます。
+`api-budget-guard` は、夜間や定期実行のエージェントが従量課金 API を使いすぎないためのローカル CLI です。設定ファイルの単価と上限だけで判定し、ネットワークには接続しません。`check` で実行前に止め、`record` で実績を JSONL に残し、`run` で既存ジョブを包めます。単価が NaN・無限大・負のときは予算判定の前に拒否します。`run` はコマンド起動前に見込み額を台帳へ同期し、同時実行でも上限の枠を二重に通しません。
