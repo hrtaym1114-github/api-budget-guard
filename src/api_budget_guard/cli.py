@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import math
 import os
 import shutil
+import signal
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -26,10 +29,14 @@ def fail(message: str) -> int:
     return EXIT_DENY
 
 
-def usd_amount(value: float, label: str) -> float:
-    if not math.isfinite(value) or value < 0:
+def require_non_negative(value: object, label: str) -> float:
+    if isinstance(value, bool) or not is_finite_number(value) or float(value) < 0:
         raise GuardError(f"{label} must be a non-negative number: {value}")
-    return value
+    return float(value)
+
+
+def usd_amount(value: float, label: str) -> float:
+    return require_non_negative(value, label)
 
 
 def is_finite_number(value: object) -> bool:
@@ -85,6 +92,7 @@ def load_config(path: Path) -> dict:
     for key in ("pricing", "tools", "thresholds"):
         if not isinstance(cfg[key], dict):
             raise GuardError(f"config {key} must be an object")
+    validate_prices(cfg)
     for key in ("warn", "degrade", "stop"):
         if not is_finite_number(cfg["thresholds"].get(key)):
             raise GuardError(f"config threshold is missing or not a number: {key}")
@@ -113,6 +121,19 @@ def load_config(path: Path) -> dict:
                 if key in routine and not is_finite_number(routine[key]):
                     raise GuardError(f"config routine {name} has non-numeric {key}")
     return cfg
+
+
+def validate_prices(cfg: dict) -> None:
+    """Reject NaN, infinite, and negative rates before any spend check."""
+    pricing = cfg["pricing"]
+    for bucket in ("event", "request"):
+        if bucket not in pricing:
+            continue
+        rates = pricing[bucket]
+        if not isinstance(rates, dict):
+            raise GuardError(f"config pricing.{bucket} must be an object")
+        for name, rate in rates.items():
+            require_non_negative(rate, f"config price {bucket}.{name}")
 
 
 def load_ledger(path: Path) -> list[dict]:
@@ -145,10 +166,58 @@ def load_ledger(path: Path) -> list[dict]:
     return rows
 
 
-def append_ledger(path: Path, row: dict) -> None:
+_INTERRUPT_SIGNALS = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
+
+
+@contextlib.contextmanager
+def ledger_exclusive(path: Path):
+    """Exclusive ledger lock. Interrupting signals stay blocked until the row is durable."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, _INTERRUPT_SIGNALS)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield fd
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def _append_locked(fd: int, row: dict) -> None:
+    payload = (json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8")
+    end = os.lseek(fd, 0, os.SEEK_END)
+    view = memoryview(payload)
+    try:
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError("failed to write ledger row")
+            view = view[written:]
+        os.fsync(fd)
+    except OSError:
+        try:
+            os.ftruncate(fd, end)
+            os.fsync(fd)
+        except OSError:
+            pass
+        raise
+
+
+def append_ledger(path: Path, row: dict) -> None:
+    with ledger_exclusive(path) as fd:
+        _append_locked(fd, row)
+
+
+def lookup_rate(cfg: dict, bucket: str, key: str) -> float:
+    kind = "request" if bucket == "request" else "event"
+    try:
+        raw = cfg["pricing"][bucket][key]
+    except (KeyError, TypeError) as exc:
+        raise GuardError(f"missing {kind} price: {key}") from exc
+    return require_non_negative(raw, f"config price {bucket}.{key}")
 
 
 def unit_price(cfg: dict, tool: str, owned: bool = False) -> tuple[float, str]:
@@ -160,22 +229,19 @@ def unit_price(cfg: dict, tool: str, owned: bool = False) -> tuple[float, str]:
         return 0.0, "free"
     if "per_request" in info:
         key = info["per_request"]
-        try:
-            return float(cfg["pricing"]["request"][key]), "request"
-        except KeyError as exc:
-            raise GuardError(f"missing request price: {key}") from exc
+        return lookup_rate(cfg, "request", key), "request"
     key = info.get("owned_per_object") if owned and info.get("owned_per_object") else info.get("per_object")
     if not key:
         raise GuardError(f"tool has no pricing rule: {tool}")
-    try:
-        return float(cfg["pricing"]["event"][key]), "object"
-    except KeyError as exc:
-        raise GuardError(f"missing event price: {key}") from exc
+    return lookup_rate(cfg, "event", key), "object"
 
 
 def estimate_call(cfg: dict, tool: str, n: int, owned: bool = False) -> float:
     price, _kind = unit_price(cfg, tool, owned)
-    return round(price * max(int(n), 0), 6)
+    cost = round(price * max(int(n), 0), 6)
+    if not math.isfinite(cost) or cost < 0:
+        raise GuardError(f"estimated cost must be a non-negative number: {cost}")
+    return cost
 
 
 def parse_call(spec: str) -> tuple[str, int, bool]:
@@ -288,6 +354,8 @@ def free_left(cfg: dict, ledger: list[dict]) -> float | None:
 
 
 def check_budget(cfg: dict, ledger: list[dict], routine: str, estimate_usd: float, at: datetime | None = None) -> dict:
+    if not math.isfinite(estimate_usd) or estimate_usd < 0:
+        raise GuardError(f"estimate must be a non-negative number: {estimate_usd}")
     at = at or now_for(cfg)
     result = {
         "routine": routine,
@@ -484,28 +552,36 @@ def init_files(config: Path, ledger: Path, preset: str) -> int:
     return EXIT_OK
 
 
-def command_run(args: argparse.Namespace, cfg: dict, ledger: list[dict], ledger_path: Path) -> int:
+def command_run(args: argparse.Namespace, cfg: dict, ledger_path: Path) -> int:
+    """Reserve the estimate, fsync it, then start the command.
+
+    Concurrent runs share this lock, so a second run sees the reservation.
+    The child is started only after the row is durable. SIGTERM during the
+    command, or a failed command, leaves that spend in the ledger.
+    """
     estimate = estimate_calls(cfg, args.call)
-    result = check_budget(cfg, ledger, args.routine, estimate)
-    code = exit_code_for(result)
-    if code == EXIT_DENY:
-        print(f"[deny] {args.routine}: {result['reason']}", file=sys.stderr)
-        return EXIT_DENY
+    with ledger_exclusive(ledger_path) as fd:
+        ledger = load_ledger(ledger_path)
+        result = check_budget(cfg, ledger, args.routine, estimate)
+        code = exit_code_for(result)
+        if code == EXIT_DENY:
+            print(f"[deny] {args.routine}: {result['reason']}", file=sys.stderr)
+            return EXIT_DENY
+        row = {
+            "ts": now_for(cfg).isoformat(timespec="seconds"),
+            "kind": "spend",
+            "routine": args.routine,
+            "tool": "estimate",
+            "objects": 0,
+            "owned": False,
+            "cost_usd": estimate,
+            "note": "recorded by run wrapper",
+        }
+        _append_locked(fd, row)
     level = "degrade" if code == EXIT_DEGRADE else "ok"
     env = os.environ.copy()
     env["BUDGET_LEVEL"] = level
     completed = subprocess.run(args.command, env=env)
-    row = {
-        "ts": now_for(cfg).isoformat(timespec="seconds"),
-        "kind": "spend",
-        "routine": args.routine,
-        "tool": "estimate",
-        "objects": 0,
-        "owned": False,
-        "cost_usd": estimate,
-        "note": "recorded by run wrapper" if completed.returncode == 0 else "recorded by run wrapper (command failed)",
-    }
-    append_ledger(ledger_path, row)
     return completed.returncode if completed.returncode != 0 else code
 
 
@@ -661,7 +737,7 @@ def main(argv: list[str] | None = None) -> int:
             if not command:
                 return fail("run requires a command after --")
             args.command = command
-            return command_run(args, cfg, ledger, ledger_path)
+            return command_run(args, cfg, ledger_path)
 
     except GuardError as exc:
         return fail(str(exc))

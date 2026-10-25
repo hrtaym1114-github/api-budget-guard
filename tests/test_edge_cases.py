@@ -4,7 +4,11 @@ import contextlib
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -432,6 +436,263 @@ class LedgerAndConfigTest(EdgeCaseBase):
         code, _out, err = self.run_cli("run", "--routine", "keyword-watch", "--call", "search_posts_all:1")
         self.assertEqual(code, cli.EXIT_DENY)
         self.assertIn("run requires a command after --", err)
+
+
+class PriceValidationTest(EdgeCaseBase):
+    """H2: NaN and negative config rates must not slip past the budget check."""
+
+    def test_bad_prices_deny_before_check(self) -> None:
+        cases = (
+            ("event", "post_read", float("nan")),
+            ("event", "post_read", float("inf")),
+            ("event", "post_read", float("-inf")),
+            ("event", "post_read", -0.01),
+            ("event", "post_read", "NaN"),
+            ("event", "post_read", "-1"),
+            ("request", "counts_recent", float("nan")),
+            ("request", "counts_recent", -0.5),
+            ("event", "news_read", True),
+        )
+        for bucket, name, rate in cases:
+            cfg = json.loads(self.config.read_text(encoding="utf-8"))
+            cfg["pricing"][bucket][name] = rate
+            self.write_config(cfg)
+            code, out, err = self.run_cli("check", "--routine", "keyword-watch", "--call", "search_posts_all:10", "--json")
+            self.assertEqual(code, cli.EXIT_DENY, (bucket, name, rate, err))
+            self.assertNotIn('"allowed": true', out)
+            self.assertIn("must be a non-negative number", err)
+            self.assertNotIn("Traceback", err)
+            self.assertEqual(self.ledger.read_text(encoding="utf-8"), "")
+
+    def test_negative_price_cannot_reopen_a_full_routine(self) -> None:
+        self.spend(NOW, "keyword-watch", 0.8)
+        self.cfg["pricing"]["event"]["post_read"] = -1
+        self.write_config(self.cfg)
+        code, out, err = self.run_cli("check", "--routine", "keyword-watch", "--call", "search_posts_all:10")
+        self.assertEqual(code, cli.EXIT_DENY)
+        self.assertNotIn("[go]", out)
+        self.assertIn("config price event.post_read", err)
+        self.assertEqual(len(cli.load_ledger(self.ledger)), 1)
+        code, out, err = self.run_cli("record", "--routine", "keyword-watch", "--tool", "search_posts_all", "--objects", "10")
+        self.assertEqual(code, cli.EXIT_DENY)
+        self.assertNotIn("Recorded", out)
+        self.assertEqual(len(cli.load_ledger(self.ledger)), 1)
+
+    def test_estimate_and_check_reject_bad_rates_in_memory(self) -> None:
+        self.cfg["pricing"]["event"]["post_read"] = float("nan")
+        with self.assertRaisesRegex(cli.GuardError, "config price event.post_read"):
+            cli.estimate_call(self.cfg, "search_posts_all", 10)
+        self.cfg["pricing"]["event"]["post_read"] = -1
+        with self.assertRaisesRegex(cli.GuardError, "config price event.post_read"):
+            cli.estimate_call(self.cfg, "search_posts_all", 10)
+        self.cfg["pricing"]["request"]["counts_recent"] = float("-inf")
+        with self.assertRaisesRegex(cli.GuardError, "config price request.counts_recent"):
+            cli.unit_price(self.cfg, "get_posts_counts_recent")
+        for value in (float("nan"), float("inf"), -0.25):
+            with self.assertRaisesRegex(cli.GuardError, "estimate must be a non-negative number"):
+                self.check("keyword-watch", value)
+
+    def test_zero_and_numeric_string_prices_still_pass(self) -> None:
+        self.cfg["pricing"]["event"]["post_read"] = "0.005"
+        self.write_config(self.cfg)
+        self.assertEqual(self.run_cli("check", "--routine", "keyword-watch", "--call", "search_posts_all:10")[0], cli.EXIT_OK)
+        self.cfg["pricing"]["event"]["post_read"] = 0
+        self.write_config(self.cfg)
+        self.assertEqual(self.run_cli("estimate", "--call", "search_posts_all:10")[0], cli.EXIT_OK)
+        self.assertEqual(self.run_cli("check", "--routine", "keyword-watch", "--call", "search_posts_all:10")[0], cli.EXIT_OK)
+
+    def test_pricing_bucket_must_be_object(self) -> None:
+        self.cfg["pricing"]["event"] = []
+        self.write_config(self.cfg)
+        code, _out, err = self.run_cli("status")
+        self.assertEqual(code, cli.EXIT_DENY)
+        self.assertIn("config pricing.event must be an object", err)
+
+
+class DurableSpendTest(EdgeCaseBase):
+    """H3: spend is reserved before the command, or the command does not start."""
+
+    def test_run_persists_spend_before_command_starts(self) -> None:
+        script = (
+            "import json, sys\n"
+            "from pathlib import Path\n"
+            "rows = [json.loads(line) for line in Path(sys.argv[1]).read_text(encoding='utf-8').splitlines() if line.strip()]\n"
+            "ok = rows and rows[-1].get('kind') == 'spend' and abs(float(rows[-1].get('cost_usd', -1)) - 0.005) < 1e-9\n"
+            "raise SystemExit(0 if ok else 4)\n"
+        )
+        code, _out, err = self.run_cli(
+            "run", "--routine", "keyword-watch", "--call", "search_posts_all:1",
+            "--", sys.executable, "-c", script, str(self.ledger),
+        )
+        self.assertEqual(code, cli.EXIT_OK, err)
+        self.assertAlmostEqual(cli.load_ledger(self.ledger)[0]["cost_usd"], 0.005)
+        self.assertEqual(cli.load_ledger(self.ledger)[0]["note"], "recorded by run wrapper")
+
+    def test_sigterm_during_command_keeps_spend(self) -> None:
+        ready = self.root / "ready"
+        script = (
+            "import pathlib, sys, time\n"
+            "pathlib.Path(sys.argv[1]).write_text('ready')\n"
+            "time.sleep(30)\n"
+        )
+        env = os.environ.copy()
+        src = str(Path(cli.__file__).resolve().parents[1])
+        env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        proc = subprocess.Popen(
+            [
+                sys.executable, "-m", "api_budget_guard",
+                "--config", str(self.config), "--ledger", str(self.ledger),
+                "run", "--routine", "keyword-watch", "--call", "search_posts_all:1", "--",
+                sys.executable, "-c", script, str(ready),
+            ],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+        )
+        try:
+            deadline = time.time() + 10
+            while time.time() < deadline and not ready.exists():
+                if proc.poll() is not None:
+                    break
+                time.sleep(0.05)
+            early = proc.poll() is not None
+            err = proc.communicate()[1] if early else ""
+            self.assertTrue(ready.exists(), err)
+            self.assertEqual(len(cli.load_ledger(self.ledger)), 1)
+            self.assertAlmostEqual(cli.load_ledger(self.ledger)[0]["cost_usd"], 0.005)
+            if not early:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.communicate(timeout=5)
+            rows = cli.load_ledger(self.ledger)
+            self.assertEqual(len(rows), 1)
+            self.assertAlmostEqual(rows[0]["cost_usd"], 0.005)
+        finally:
+            if proc.poll() is None:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate(timeout=5)
+
+    def test_readonly_ledger_does_not_start_command(self) -> None:
+        marker = self.root / "ran.txt"
+        os.chmod(self.ledger, 0o444)
+        try:
+            code, _out, err = self.run_cli(
+                "run", "--routine", "keyword-watch", "--call", "search_posts_all:1",
+                "--", sys.executable, "-c", f"open({str(marker)!r}, 'w').write('ran')",
+            )
+        finally:
+            os.chmod(self.ledger, 0o644)
+        self.assertEqual(code, cli.EXIT_DENY)
+        self.assertFalse(marker.exists())
+        self.assertNotIn("Traceback", err)
+        self.assertEqual(self.ledger.read_text(encoding="utf-8"), "")
+
+    def test_failed_fsync_does_not_acknowledge_or_start(self) -> None:
+        marker = self.root / "ran.txt"
+        calls = {"n": 0}
+
+        def flaky(_fd: int) -> None:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("fsync failed")
+
+        with mock.patch("api_budget_guard.cli.os.fsync", side_effect=flaky):
+            code, out, err = self.run_cli(
+                "record", "--routine", "keyword-watch", "--tool", "search_posts_all", "--objects", "10"
+            )
+        self.assertEqual(code, cli.EXIT_DENY)
+        self.assertNotIn("Recorded", out)
+        self.assertIn("fsync failed", err)
+        self.assertEqual(self.ledger.read_text(encoding="utf-8"), "")
+
+        calls["n"] = 0
+        with mock.patch("api_budget_guard.cli.os.fsync", side_effect=flaky):
+            code, _out, err = self.run_cli(
+                "run", "--routine", "keyword-watch", "--call", "search_posts_all:1",
+                "--", sys.executable, "-c", f"open({str(marker)!r}, 'w').write('ran')",
+            )
+        self.assertEqual(code, cli.EXIT_DENY)
+        self.assertFalse(marker.exists())
+        self.assertIn("fsync failed", err)
+        self.assertEqual(self.ledger.read_text(encoding="utf-8"), "")
+
+    def test_partial_append_rolls_back_previous_rows(self) -> None:
+        original = '{"cost_usd": 0.2, "kind": "spend", "ts": "%s"}\n' % NOW
+        self.ledger.write_text(original, encoding="utf-8")
+        real_write = os.write
+        state = {"n": 0}
+
+        def flaky(fd: int, data: bytes) -> int:
+            state["n"] += 1
+            if state["n"] == 1:
+                real_write(fd, data[:1])
+                raise OSError("disk full")
+            return real_write(fd, data)
+
+        with mock.patch("api_budget_guard.cli.os.write", side_effect=flaky):
+            with self.assertRaises(OSError):
+                cli.append_ledger(self.ledger, {"ts": NOW, "kind": "spend", "routine": "keyword-watch", "cost_usd": 0.1})
+        self.assertEqual(self.ledger.read_text(encoding="utf-8"), original)
+        self.assertEqual(len(cli.load_ledger(self.ledger)), 1)
+
+
+class ConcurrentRunTest(EdgeCaseBase):
+    """M2: overlapping run processes cannot share one remaining cap slot."""
+
+    def _spawn(self, marker: Path, call: str, pause: float) -> subprocess.Popen[str]:
+        script = (
+            "import pathlib, sys, time\n"
+            "pathlib.Path(sys.argv[1]).write_text('ran')\n"
+            "time.sleep(float(sys.argv[2]))\n"
+        )
+        env = os.environ.copy()
+        src = str(Path(cli.__file__).resolve().parents[1])
+        env["PYTHONPATH"] = src + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        return subprocess.Popen(
+            [
+                sys.executable, "-m", "api_budget_guard",
+                "--config", str(self.config), "--ledger", str(self.ledger),
+                "run", "--routine", "keyword-watch", "--call", call, "--",
+                sys.executable, "-c", script, str(marker), str(pause),
+            ],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+
+    def _parallel(self, count: int, call: str, pause: float) -> tuple[list[tuple[int, str, str]], list[Path]]:
+        markers = [self.root / f"ran-{index}" for index in range(count)]
+        procs = [self._spawn(marker, call, pause) for marker in markers]
+        results = []
+        for proc in procs:
+            try:
+                out, err = proc.communicate(timeout=20)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, err = proc.communicate()
+                self.fail(f"parallel run timed out\n{err}")
+            results.append((proc.returncode, out, err))
+        return results, [marker for marker in markers if marker.exists()]
+
+    def test_parallel_runs_cannot_share_one_slot(self) -> None:
+        routine = self.cfg["phases"][0]["routines"]["keyword-watch"]
+        routine["per_run_usd"] = 0.05
+        routine["period_usd"] = 0.05
+        self.write_config(self.cfg)
+        results, ran = self._parallel(4, "search_posts_all:10", 0.4)
+        codes = sorted(code for code, _out, _err in results)
+        detail = "\n".join(err for _code, _out, err in results)
+        self.assertEqual(codes, [cli.EXIT_OK, cli.EXIT_DENY, cli.EXIT_DENY, cli.EXIT_DENY], detail)
+        self.assertEqual(len(ran), 1, detail)
+        rows = cli.load_ledger(self.ledger)
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0]["cost_usd"], 0.05)
+        self.assertTrue(any("cap reached" in err for _code, _out, err in results), detail)
+
+    def test_parallel_runs_both_record_when_under_cap(self) -> None:
+        results, ran = self._parallel(2, "search_posts_all:10", 0.0)
+        detail = "\n".join(err for _code, _out, err in results)
+        self.assertEqual([code for code, _out, _err in results], [cli.EXIT_OK, cli.EXIT_OK], detail)
+        self.assertEqual(len(ran), 2)
+        rows = cli.load_ledger(self.ledger)
+        self.assertEqual(len(rows), 2)
+        self.assertAlmostEqual(sum(row["cost_usd"] for row in rows), 0.1)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Reject NaN, infinite, and negative config prices before budget checks (H2).
+- `run` fsyncs its estimated spend under an exclusive ledger lock before starting the command. A failed write does not start the command, and SIGTERM during the command keeps the spend. The reservation note stays `recorded by run wrapper` because it is written before the command result is known (H3).
+- Concurrent `run` processes recheck and reserve atomically, so parallel runs cannot share a cap that only one of them fits (M2).
+
 ## 0.1.2 - 2026-10-25
 
 Hardening / bugfix release (JP + EN).
