@@ -1,5 +1,7 @@
 # api-budget-guard
 
+[English](README.en.md)
+
 `api-budget-guard` is a small offline CLI brake for scheduled agents that call metered APIs. It estimates a run before it happens, checks per-run, routine, and period (monthly or whole-phase) caps, records actual spend to a JSONL ledger, and can wrap commands so unattended jobs stop before touching a hard budget.
 
 It uses only the Python standard library and never calls provider APIs.
