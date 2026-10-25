@@ -79,6 +79,17 @@ class CliTest(unittest.TestCase):
         with mock.patch.dict(os.environ, {"API_BUDGET_GUARD_NOW": "2028-01-01T00:00:00+09:00"}):
             self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:1"), cli.EXIT_DENY)
 
+    def test_no_phase_json_denies_with_complete_shape(self) -> None:
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"API_BUDGET_GUARD_NOW": "2028-01-01T00:00:00+09:00"}), contextlib.redirect_stdout(out):
+            self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:1", "--json"), cli.EXIT_DENY)
+        data = json.loads(out.getvalue())
+        self.assertFalse(data["allowed"])
+        self.assertEqual(data["level"], "stop")
+        self.assertEqual(data["cap"], None)
+        self.assertEqual(data["spent"], None)
+        self.assertEqual(data["remaining"], None)
+
     def test_paid_baseline_drop_denies_all(self) -> None:
         cfg = cli.load_config(self.config)
         cfg["paid_baseline_usd"] = 10.0
@@ -112,7 +123,8 @@ class CliTest(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(self.call("check", "--routine", "keyword-watch", "--call", "search_posts_all:10", "--json"), 0)
         data = json.loads(out.getvalue())
-        self.assertEqual(set(data), {"level", "cap", "spent", "remaining", "reason"})
+        self.assertEqual(set(data), {"allowed", "level", "cap", "spent", "remaining", "reason"})
+        self.assertTrue(data["allowed"])
         self.assertEqual(data["level"], "ok")
         self.assertEqual(data["cap"], 0.8)
 
@@ -150,6 +162,14 @@ class CliTest(unittest.TestCase):
             cli.EXIT_DENY,
         )
         self.assertFalse(marker.exists())
+
+    def test_denied_check_json_has_non_ok_level(self) -> None:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self.call("check", "--routine", "keyword-watch", "--usd", "1", "--json"), cli.EXIT_DENY)
+        data = json.loads(out.getvalue())
+        self.assertFalse(data["allowed"])
+        self.assertNotEqual(data["level"], "ok")
 
 
 class DenyWordingTest(unittest.TestCase):

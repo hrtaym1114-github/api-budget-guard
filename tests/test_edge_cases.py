@@ -217,6 +217,21 @@ class FreeBalanceTest(EdgeCaseBase):
         self.assertEqual(code, cli.EXIT_OK)
         self.assertEqual(out.strip(), "Balance recorded: free $3.00, paid $2.00, total $5.00")
 
+    def test_balance_defaults_free_to_remainder(self) -> None:
+        code, out, _err = self.run_cli("balance", "--usd", "5", "--paid", "4.95")
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertEqual(out.strip(), "Balance recorded: free $0.05, paid $4.95, total $5.00")
+
+    def test_balance_rejects_inconsistent_split(self) -> None:
+        for message, args in (
+            ("--free plus --paid must equal --usd", ("balance", "--usd", "5", "--free", "2", "--paid", "2")),
+            ("--paid cannot exceed --usd", ("balance", "--usd", "5", "--paid", "6")),
+        ):
+            code, _out, err = self.run_cli(*args)
+            self.assertEqual(code, cli.EXIT_DENY)
+            self.assertIn(message, err)
+        self.assertEqual(cli.load_ledger(self.ledger), [])
+
 
 class InputTest(EdgeCaseBase):
     def test_parse_call_variants(self) -> None:
@@ -345,6 +360,10 @@ class LedgerAndConfigTest(EdgeCaseBase):
             self.ledger.write_text(line + "\n", encoding="utf-8")
             self.assert_status_denied(message)
 
+    def test_negative_ledger_cost_denies(self) -> None:
+        self.ledger.write_text(f'{{"ts": "{NOW}", "kind": "spend", "cost_usd": -3.0}}\n', encoding="utf-8")
+        self.assert_status_denied("ledger row has negative cost_usd at line 1")
+
     def test_malformed_config_values_deny(self) -> None:
         def mutate(change):
             cfg = json.loads(json.dumps(self.cfg))
@@ -399,12 +418,15 @@ class LedgerAndConfigTest(EdgeCaseBase):
         self.assertEqual(code, cli.EXIT_OK)
         self.assertEqual(out.splitlines()[0], "API budget at 2028-06-01T00:00:00+09:00 phase=none")
 
-    def test_run_returns_command_failure_without_recording(self) -> None:
+    def test_run_returns_command_failure_and_records(self) -> None:
         code, _out, _err = self.run_cli(
             "run", "--routine", "keyword-watch", "--call", "search_posts_all:1", "--", "python3", "-c", "raise SystemExit(3)"
         )
         self.assertEqual(code, 3)
-        self.assertEqual(cli.load_ledger(self.ledger), [])
+        ledger = cli.load_ledger(self.ledger)
+        self.assertEqual(len(ledger), 1)
+        self.assertEqual(ledger[0]["cost_usd"], 0.005)
+        self.assertIn("recorded by run wrapper", ledger[0]["note"])
 
     def test_run_without_command_denies(self) -> None:
         code, _out, err = self.run_cli("run", "--routine", "keyword-watch", "--call", "search_posts_all:1")

@@ -139,6 +139,8 @@ def load_ledger(path: Path) -> list[dict]:
         for key in ("cost_usd", "free_balance", "paid_balance", "total_balance"):
             if key in row and not is_finite_number(row[key]):
                 raise GuardError(f"ledger row has invalid {key} at line {number}: {path}")
+        if "cost_usd" in row and float(row["cost_usd"]) < 0:
+            raise GuardError(f"ledger row has negative cost_usd at line {number}: {path}")
         rows.append(row)
     return rows
 
@@ -293,6 +295,9 @@ def check_budget(cfg: dict, ledger: list[dict], routine: str, estimate_usd: floa
         "cap": None,
         "spent": None,
         "remaining": None,
+        "routine_cap": None,
+        "routine_spent": None,
+        "routine_remaining": None,
         "estimate_usd": round(estimate_usd, 6),
         "allowed": True,
         "reason": "within budget",
@@ -365,6 +370,8 @@ def check_budget(cfg: dict, ledger: list[dict], routine: str, estimate_usd: floa
             result["level"] = "degrade"
             result["reasons"].append("balance snapshot is stale")
 
+    if not result["allowed"] and result["level"] not in ("degrade", "stop"):
+        result["level"] = "stop"
     if not result["reasons"]:
         result["reasons"].append("within budget")
     result["reason"] = "; ".join(result["reasons"])
@@ -488,8 +495,6 @@ def command_run(args: argparse.Namespace, cfg: dict, ledger: list[dict], ledger_
     env = os.environ.copy()
     env["BUDGET_LEVEL"] = level
     completed = subprocess.run(args.command, env=env)
-    if completed.returncode != 0:
-        return completed.returncode
     row = {
         "ts": now_for(cfg).isoformat(timespec="seconds"),
         "kind": "spend",
@@ -498,10 +503,10 @@ def command_run(args: argparse.Namespace, cfg: dict, ledger: list[dict], ledger_
         "objects": 0,
         "owned": False,
         "cost_usd": estimate,
-        "note": "recorded by run wrapper",
+        "note": "recorded by run wrapper" if completed.returncode == 0 else "recorded by run wrapper (command failed)",
     }
     append_ledger(ledger_path, row)
-    return code
+    return completed.returncode if completed.returncode != 0 else code
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -578,6 +583,7 @@ def main(argv: list[str] | None = None) -> int:
             result = check_budget(cfg, ledger, args.routine, estimate, at)
             if args.json:
                 print(json.dumps({
+                    "allowed": result["allowed"],
                     "level": result["level"],
                     "cap": result["routine_cap"],
                     "spent": result["routine_spent"],
@@ -619,8 +625,22 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.cmd == "balance":
             usd = usd_amount(args.usd, "--usd")
-            free = usd_amount(args.free, "--free") if args.free is not None else usd
-            paid = usd_amount(args.paid, "--paid") if args.paid is not None else max(usd - free, 0)
+            free_arg = usd_amount(args.free, "--free") if args.free is not None else None
+            paid_arg = usd_amount(args.paid, "--paid") if args.paid is not None else None
+            if free_arg is None and paid_arg is None:
+                free, paid = usd, 0.0
+            elif free_arg is None:
+                if paid_arg > usd + 1e-6:
+                    raise GuardError("--paid cannot exceed --usd")
+                free, paid = usd - paid_arg, paid_arg
+            elif paid_arg is None:
+                if free_arg > usd + 1e-6:
+                    raise GuardError("--free cannot exceed --usd")
+                free, paid = free_arg, usd - free_arg
+            else:
+                if abs(free_arg + paid_arg - usd) > 1e-6:
+                    raise GuardError("--free plus --paid must equal --usd")
+                free, paid = free_arg, paid_arg
             row = balance_row(cfg, ledger, free, paid, at)
             append_ledger(ledger_path, row)
             print(f"Balance recorded: free ${free:.2f}, paid ${paid:.2f}, total ${free + paid:.2f}")

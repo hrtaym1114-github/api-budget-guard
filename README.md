@@ -49,7 +49,7 @@ api-budget-guard status [--json]
 api-budget-guard run --routine NAME --call TOOL:N[:owned] -- command arg...
 ```
 
-`--call` can be repeated; the estimate is the sum of all calls. `check` needs `--call` or `--usd` (`--usd` wins if both are given). `init` defaults to the `generic` preset and refuses to overwrite existing files. Amounts and counts must be non-negative numbers.
+`--call` can be repeated; the estimate is the sum of all calls. `check` requires `--call` or `--usd` (`--usd` wins if both are given); a bare `check --routine NAME` denies with exit `20`. `init` defaults to the `generic` preset and refuses to overwrite existing files. Amounts and counts must be non-negative numbers.
 
 Global options:
 
@@ -67,7 +67,7 @@ Defaults are `./budget.json` and `./ledger.jsonl`. Set `API_BUDGET_GUARD_NOW` to
 
 `run` returns the wrapped command's own exit code when the command fails.
 
-`check --json` returns `level`, `reason`, and the routine's `cap`, `spent`, and `remaining` for the current period.
+`check --json` returns `allowed`, `level`, `reason`, and the routine's `cap`, `spent`, and `remaining` for the current period. It emits this complete shape even when no budget phase is active.
 
 ## Config Reference
 
@@ -95,7 +95,7 @@ The bundled `x-api` preset contains example prices as of 2026-10. Verify prices 
 api-budget-guard run --routine keyword-watch --call search_posts_all:10 -- ./job.sh
 ```
 
-The wrapper checks first. It runs the command only for exit `0` or `10`, exports `BUDGET_LEVEL=ok` or `BUDGET_LEVEL=degrade`, and records the estimate to the ledger after the command exits `0`. If the command fails, nothing is recorded and its exit code is returned.
+The wrapper checks first. It runs the command only for exit `0` or `10`, exports `BUDGET_LEVEL=ok` or `BUDGET_LEVEL=degrade`, and records the estimate to the ledger after the command exits. If the command fails, its estimate is still recorded for fail-closed accounting and the command's exit code is returned.
 
 ## Fail-Closed Behavior
 
